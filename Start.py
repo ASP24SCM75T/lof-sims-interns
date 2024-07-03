@@ -5,10 +5,9 @@ import requests
 from sim_prompts import *  # Ensure this import provides the needed functionality
 from bs4 import BeautifulSoup
 from fpdf import FPDF
+from docx import Document
 from sqlalchemy import create_engine, Column, Integer, String, Text, MetaData, Index
-# from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, declarative_base
-# from st_pages import show_pages, hide_pages, Page
 
 # Database setup
 DATABASE_URL = "sqlite:///app_data.db"  # SQLite database
@@ -16,7 +15,6 @@ DATABASE_URL = "sqlite:///app_data.db"  # SQLite database
 engine = create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
 session = Session()
-# Base = declarative_base()
 Base = declarative_base()
 
 # Define the models
@@ -127,6 +125,40 @@ def html_to_pdf(html_content, name):
     # Output the PDF
     pdf.output(name)
 
+def html_to_docx(html_content, name):
+    # Use BeautifulSoup to parse the HTML
+    soup = BeautifulSoup(html_content, "html.parser")
+    
+    # Create DOCX instance
+    doc = Document()
+
+    # Extract title for the document
+    case_title_tag = soup.find("h1")
+    case_title = case_title_tag.get_text() if case_title_tag else "Document"
+    doc.add_heading(case_title, level=1)
+    
+    # Process each section of the HTML
+    for element in soup.find_all(["h1", "h2", "h3", "p", "ul", "ol", "li", "hr"]):
+        if element.name == "h1":
+            doc.add_heading(element.get_text(), level=1)
+        elif element.name == "h2":
+            doc.add_heading(element.get_text(), level=2)
+        elif element.name == "h3":
+            doc.add_heading(element.get_text(), level=3)
+        elif element.name == "p":
+            doc.add_paragraph(element.get_text())
+        elif element.name == "ul":
+            for li in element.find_all("li"):
+                doc.add_paragraph(f"- {li.get_text()}")
+        elif element.name == "ol":
+            for i, li in enumerate(element.find_all("li"), start=1):
+                doc.add_paragraph(f"{i}. {li.get_text()}")
+        elif element.name == "hr":
+            doc.add_page_break()
+    
+    # Output the DOCX
+    doc.save(name)
+
 def init_session():
     if "final_case" not in st.session_state:
         st.session_state["final_case"] = ""
@@ -136,6 +168,10 @@ def init_session():
         st.session_state["retrieved_name"] = ""
     if "selected_case_id" not in st.session_state:
         st.session_state["selected_case_id"] = -1
+    if "lab_tests" not in st.session_state:
+        st.session_state["lab_tests"] = []
+    if "selected_tests" not in st.session_state:
+        st.session_state["selected_tests"] = []
 
 # Function to save a transcript
 def save_transcript(transcript_content, role, specialty):
@@ -229,6 +265,37 @@ def check_password():
 st.title("Case Generator for Simulations")
 init_session()
 
+lab_tests_dict = {
+    "Thyroid": {
+        "TSH": "0.3-3.7 uIU/ml",
+        "Free T3": "230-619 pg/dL",
+        "Free T4": "0.7-1.9 ng/dL"
+    },
+    "Cardiac": {
+        "CPK": "26-140 U/L",
+        "CK-MB": "< 3% of total",
+        "Troponin I": "0.00-0.04 ng/ml"
+    },
+    "CMP (Comprehensive Metabolic Panel)": {
+        "Sodium": "135-145 mmol/L",
+        "Potassium": "3.5-4.5 mmol/L",
+        "Chloride": "98 - 106 mmol/L",
+        "CO2": "22-29 mmol/L",
+        "BUN": "7 - 18 mg/dL",
+        "Cr": "0.6-1.2 mg/dL",
+        "Glucose": "20-115 mg/dL",
+        "Calcium": "8.4-10.2 mg/dL",
+        "Magnesium": "1.3-2.1 mmol/L",
+        "Alk Phos": "38-126 U/L",
+        "Albumin": "3.5-5.5 g/dL",
+        "Total Protein": "6 - 8 g/dL",
+        "AST": "5 - 30 U/L",
+        "ALT": "5 - 35 U/L",
+        "Bilirubin": "< 1.0 mg/dL"
+    }
+    # Add other diagnoses and their tests here
+}
+
 if check_password():
     st.info("Provide inputs and generate a case. After your case is generated, please click the '*Send case to the simulator!*' and then wake the simulator.")
     
@@ -254,7 +321,7 @@ if check_password():
     if "learner_tasks" not in st.session_state:
         st.session_state["learner_tasks"] = learner_tasks
         
-    tab1, tab2 = st.tabs(["New Case", "Retrieve a Case"])
+    tab1, tab2, tab3 = st.tabs(["New Case", "Retrieve a Case", "Select Lab Tests"])
     
     with tab1:
 
@@ -263,20 +330,6 @@ if check_password():
         with col1:    
             st.info("**Include desired history in the text paragraph. The AI will generate additional details as needed to draft an educational case.**")
                 
-                
-            # learning_objectives = st.multiselect(
-            #     "Select one or more learning objectives; default is a focused history/examination",
-            #     [
-            #         "Perform a focused history and examination",
-            #         "Provide patient education",
-            #         "Demonstrate effective interpersonal skills",
-            #         "Determine a Dx and DDx",
-            #         "Determine a plan for management",
-            #         "Document the patient case"
-            #     ], default="Perform a focused history and examination",
-            #     help="Choose the learning objectives relevant to this case study."
-            # )
-
             case_study_input = {
                 'Case Title': st.text_input("Case Study Title", help="Presenting symptom, e.g."),
                 'Case Description': st.text_area("Case Description", height=200, help = "As detailed or brief as desired, e.g., 65F with acute chest pain..."),
@@ -288,7 +341,6 @@ if check_password():
             if st.checkbox("Edit Learner Tasks", value=False, key = "initial_case_edit"):
                 learner_tasks = st.text_area("Learner Tasks for Assessment", height=200, help = "What the learner is expected to do, e.g., Perform a focused history and examination", value = learner_tasks)
             st.session_state.learner_tasks = learner_tasks
-            # final_learner_tasks = st.text_area("Learner Tasks for Assessment", height=200, help = "What the learner is expected to do, e.g., Perform a focused history and examination", value = learner_tasks)
         
         with col1: 
             st.info("Click submit when ready to generate a case!")
@@ -324,26 +376,26 @@ if check_password():
                             st.success("Case Edits Saved!")
                             if edited_new_case:
                                 st.session_state["final_case"] = edited_new_case
-                        # st.session_state.sidebar_state = 'expanded'
                         st.page_link("pages/🧠_Simulator.py", label="Wake the Simulator (including any saved edits)", icon="🧠")
                 else:
                     st.session_state["final_case"] = st.session_state.response_markdown
                 
                 if st.session_state.final_case !="":        
                     case_html = markdown2.markdown(st.session_state.final_case, extras=["tables"])
-                        # st.download_button('Download HTML Case file', html, f'case.html', 'text/html')
                         
-                    # st.info("Download the Current Case:")
                     if st.checkbox("Generate Case PDF file"):
                         html_to_pdf(case_html, 'case.pdf')
                         with open("case.pdf", "rb") as f:
                             st.download_button("Download Case PDF", f, "case.pdf")
+                    if st.checkbox("Generate Case DOCX file"):
+                        html_to_docx(case_html, 'case.docx')
+                        with open("case.docx", "rb") as f:
+                            st.download_button("Download Case DOCX", f, "case.docx")
 
                 if st.session_state["final_case"] != "":
                     if st.button("Send case to the simulator!"):
-                        st.session_state["final_case"] = st.session_state.final_case  # Ensure the case is correctly set
+                        st.session_state["final_case"] = st.session_state.final_case
                         st.session_state["retrieved_name"] = st.session_state.retrieved_name
-                        # st.session_state.sidebar_state = 'expanded'
                         st.page_link("pages/🧠_Simulator.py", label="Wake the Simulator", icon="🧠")
 
         with col3:
@@ -353,10 +405,6 @@ if check_password():
                 if st.checkbox("Save Case to the Database for Future Use"):
                     case_details = st.text_area("Case Details to Save to the Database for Future Use", value=st.session_state.final_case)
                     saved_name = st.text_input("Saved Name (Required to save case)")
-                    # selected_role = st.selectbox("Role", roles)
-                    # specialty = ""
-                    # if selected_role in ["Resident", "Fellow", "Attending"]:
-                    #     specialty = st.text_input("Specialty", "")
 
                     if st.button("Save Case to the Database for future use!"):
                         if saved_name:
@@ -364,12 +412,7 @@ if check_password():
                             st.success("Case Details saved successfully!")
                         else:
                             st.error("Saved Name is required to save the case")
-
-
     
-    
-    # Initialize session state variables
-    # Initialize session state variables
     if "search_results" not in st.session_state:
         st.session_state.search_results = []
     if "selected_case" not in st.session_state:
@@ -383,7 +426,6 @@ if check_password():
             st.header("Retrieve Records")
             search_text = st.text_input("Search Text")
             search_saved_name = st.text_input("Search by Saved Name")
-            # search_role = st.selectbox("Search by Role", [""] + roles)
             search_role =""
             search_specialty = ""
             if search_role in ["Resident", "Fellow", "Attending"]:
@@ -395,7 +437,6 @@ if check_password():
             if st.session_state.search_results:
                 st.subheader("Cases Found")
                 for i, case in enumerate(st.session_state.search_results):
-                    # st.write(f"Saved Name: {case.saved_name}, Role: {case.role}, Specialty: {case.specialty}")
                     st.write(f"{i+1}. {case.saved_name}")
                     if st.button(f"View (and Select) Case {i+1}", key=f"select_case_{i}"):
                         st.session_state.selected_case = case
@@ -420,16 +461,35 @@ if check_password():
                             html_to_pdf(updated_case_html, 'updated_case.pdf')
                             with open("updated_case.pdf", "rb") as f:
                                 st.download_button("Download Updated Case PDF", f, "updated_case.pdf")
+                            if st.button("Generate Case DOCX file"):
+                                html_to_docx(updated_case_html, 'updated_case.docx')
+                                with open("updated_case.docx", "rb") as f:
+                                    st.download_button("Download Case DOCX", f, "updated_case.docx")
                             if make_new_entry:
                                 if saved_name:
                                     save_case_details(st.session_state.final_case, saved_name)
                                     st.success("Case Details saved successfully!")
                                 else:
                                     st.error("Saved Name is required to save the case")
-                    # st.session_state.sidebar_state = 'expanded'        
                     st.page_link("pages/🧠_Simulator.py", label="Wake the Simulator ", icon="🧠")
-            
-            
 
+    # Tab3 content for selecting lab tests
+    with tab3:
+        st.header("Select Lab Tests")
+        primary_diagnosis = st.selectbox("Select Primary Diagnosis for Lab Tests", options=list(lab_tests_dict.keys()))
+        
+        if primary_diagnosis:
+            st.session_state.lab_tests = lab_tests_dict.get(primary_diagnosis, {})
 
+        if st.session_state.lab_tests:
+            selected_tests = st.multiselect("Select Lab Tests", options=list(st.session_state.lab_tests.keys()))
+            st.session_state.selected_tests = selected_tests
 
+            if selected_tests:
+                st.subheader("Selected Lab Tests")
+                table_data = [["Test", "Result", "Normal Range", "Comments"]]
+                for test in selected_tests:
+                    table_data.append([test, "", st.session_state.lab_tests[test], ""])
+
+                st.write("## Lab Test Results")
+                st.table(table_data)
